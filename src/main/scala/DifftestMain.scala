@@ -17,7 +17,7 @@
 package difftest
 
 import chisel3._
-import chisel3.stage._
+import circt.stage._
 
 // Main class to generate difftest modules when design is not written in chisel.
 class DifftestTop extends Module {
@@ -50,7 +50,7 @@ class DifftestTop extends Module {
 }
 
 object DifftestMain extends App {
-  (new ChiselStage).execute(args, Seq(
-      ChiselGeneratorAnnotation(() => new DifftestTop))
-  )
+  val generator = Seq(chisel3.stage.ChiselGeneratorAnnotation(() => new DifftestTop))
+  (new ChiselStage).execute(args, generator :+ CIRCTTargetAnnotation(CIRCTTarget.Verilog))
 }
+

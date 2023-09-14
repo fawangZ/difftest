@@ -23,7 +23,7 @@ DESIGN_DIR ?= $(NOOP_HOME)
 NUM_CORES  ?= 1
 
 BUILD_DIR  = $(DESIGN_DIR)/build
-SIM_TOP_V  = $(BUILD_DIR)/$(SIM_TOP).v
+SIM_TOP_V  = $(BUILD_DIR)/$(SIM_TOP).sv
 
 DIFF_SCALA_FILE = $(shell find ./src/main/scala -name '*.scala')
 SCALA_FILE = $(shell find $(DESIGN_DIR)/src/main/scala -name '*.scala' 2>/dev/null)
