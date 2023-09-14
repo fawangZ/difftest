@@ -20,8 +20,8 @@ import publish._
 
 object ivys {
   val scala = "2.13.10"
-  val chisel3 = ivy"org.chipsalliance::chisel:5.0.0"
-  val chisel3Plugin = ivy"org.chipsalliance:::chisel-plugin:5.0.0"
+  val chisel3 = ivy"org.chipsalliance::chisel:6.0.0-M3"
+  val chisel3Plugin = ivy"org.chipsalliance:::chisel-plugin:6.0.0-M3"
 }
 
 trait CommonDiffTest extends ScalaModule with SbtModule {
