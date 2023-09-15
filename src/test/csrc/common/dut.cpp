@@ -1,6 +1,5 @@
 /***************************************************************************************
 * Copyright (c) 2020-2023 Institute of Computing Technology, Chinese Academy of Sciences
-* Copyright (c) 2020-2021 Peng Cheng Laboratory
 *
 * DiffTest is licensed under Mulan PSL v2.
 * You can use this software according to the terms and conditions of the Mulan PSL v2.
@@ -14,35 +13,27 @@
 * See the Mulan PSL v2 for more details.
 ***************************************************************************************/
 
-import "DPI-C" function void ram_write_helper
-(
-  input  longint    wIdx,
-  input  longint    wdata,
-  input  longint    wmask,
-  input  bit        wen
-);
+#include "dut.h"
 
-import "DPI-C" function longint ram_read_helper
-(
-  input  bit        en,
-  input  longint    rIdx
-);
+SimStats stats;
 
-module RAMHelper(
-  input         clk,
-  input         en,
-  input  [63:0] rIdx,
-  output [63:0] rdata,
-  input  [63:0] wIdx,
-  input  [63:0] wdata,
-  input  [63:0] wmask,
-  input         wen
-);
+extern "C" uint32_t get_cover_number() {
+  if (auto c = stats.get_feedback_cover()) {
+    return c->get_total_points();
+  }
+  return 0;
+}
 
-  assign rdata = ram_read_helper(en, rIdx);
+extern "C" void update_stats(uint8_t *icover_bitmap) {
+  if (auto c = stats.get_feedback_cover()) {
+    c->to_covered_bytes(icover_bitmap);
+  }
+}
 
-  always @(posedge clk) begin
-    ram_write_helper(wIdx, wdata, wmask, wen && en);
-  end
+extern "C" void display_uncovered_points() {
+  stats.display_uncovered_points();
+}
 
-endmodule
+extern "C" void set_cover_feedback(const char *name) {
+  stats.set_feedback_cover(name);
+}

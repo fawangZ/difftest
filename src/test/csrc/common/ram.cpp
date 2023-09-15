@@ -1,8 +1,8 @@
 /***************************************************************************************
-* Copyright (c) 2020-2021 Institute of Computing Technology, Chinese Academy of Sciences
+* Copyright (c) 2020-2023 Institute of Computing Technology, Chinese Academy of Sciences
 * Copyright (c) 2020-2021 Peng Cheng Laboratory
 *
-* XiangShan is licensed under Mulan PSL v2.
+* DiffTest is licensed under Mulan PSL v2.
 * You can use this software according to the terms and conditions of the Mulan PSL v2.
 * You may obtain a copy of Mulan PSL v2 at:
 *          http://license.coscl.org.cn/MulanPSL2
@@ -14,6 +14,7 @@
 * See the Mulan PSL v2 for more details.
 ***************************************************************************************/
 
+#include <iostream>
 #include <sys/mman.h>
 
 #include "common.h"
@@ -27,15 +28,7 @@
 CoDRAMsim3 *dram = NULL;
 #endif
 
-static uint64_t *ram;
-static long img_size = 0;
-
-unsigned long EMU_RAM_SIZE = DEFAULT_EMU_RAM_SIZE;
-
-void* get_img_start() { return &ram[0]; }
-long get_img_size() { return img_size; }
-void* get_ram_start() { return &ram[0]; }
-long get_ram_size() { return EMU_RAM_SIZE; }
+SimMemory *simMemory = nullptr;
 
 #ifdef TLB_UNITTEST
 // Note: addpageSv39 only supports pmem base 0x80000000
@@ -113,7 +106,7 @@ void addpageSv39() {
     }
   }
 
-  printf("try to add identical tlb page to ram\n");
+  Info("try to add identical tlb page to ram\n");
   memcpy((char *)ram+(TOPSIZE-PAGESIZE*(PTENUM+PDDENUM+PDENUM+PDEMMIONUM+PTEMMIONUM+PDEDEVNUM+PTEDEVNUM)),ptedev,PAGESIZE*PTEDEVNUM);
   memcpy((char *)ram+(TOPSIZE-PAGESIZE*(PTENUM+PDDENUM+PDENUM+PDEMMIONUM+PTEMMIONUM+PDEDEVNUM)),pdedev,PAGESIZE*PDEDEVNUM);
   memcpy((char *)ram+(TOPSIZE-PAGESIZE*(PTENUM+PDDENUM+PDENUM+PDEMMIONUM+PTEMMIONUM)),ptemmio, PAGESIZE*PTEMMIONUM);
@@ -124,23 +117,141 @@ void addpageSv39() {
 }
 #endif
 
-void init_ram(const char *img) {
-  assert(img != NULL);
+SimMemory::~SimMemory() {}
 
-  printf("The image is %s\n", img);
+bool SimMemory::is_stdin(const char *image) {
+  return !strcmp(image, "-");
+}
 
+// Read memory image from the standard input.
+// The stdin is formatted as { total_bytes: uint64_t, bytes: uint8_t[] }
+StdinReader::StdinReader() : n_bytes(next()) {}
+
+uint64_t StdinReader::next() {
+  uint64_t value;
+  std::cin.read(reinterpret_cast<char*>(&value), sizeof(uint64_t));
+  if (std::cin.fail()) {
+    return 0;
+  }
+  return value;
+}
+
+uint64_t StdinReader::read_all(void *dest, uint64_t max_bytes) {
+  uint64_t n_read = n_bytes;
+  if (n_read >= max_bytes) {
+    n_read = max_bytes;
+  }
+  std::cin.get((char *)dest, n_read);
+  n_bytes -= n_read;
+  return n_read;
+}
+
+// wim@[base_addr],[wim_size]
+uint64_t *SimMemory::is_wim(const char *image, uint64_t &wim_size) {
+  const char wim_prefix[] = "wim";
+  const char *wim_info = strchr(image, '@');
+  if (!wim_info || strncmp(wim_prefix, image, sizeof(wim_prefix) - 1)) {
+    return nullptr;
+  }
+  wim_info++;
+  uint64_t base_addr = strtoul(wim_info, (char **)&wim_info, 16);
+  if (base_addr % sizeof(uint64_t) || *wim_info != '+') {
+    return nullptr;
+  }
+  wim_info++;
+  wim_size = strtoul(wim_info, (char **)&wim_info, 16);
+  if (*wim_info) {
+    return nullptr;
+  }
+  return (uint64_t *)base_addr;
+}
+
+uint64_t WimReader::next() {
+  if (index + sizeof(uint64_t) > size) {
+    return 0;
+  }
+  uint64_t value = base_addr[index / sizeof(uint64_t)];
+  index += sizeof(uint64_t);
+  return value;
+}
+
+uint64_t WimReader::read_all(void *dest, uint64_t max_bytes) {
+  uint64_t n_read = size - index;
+  if (n_read >= max_bytes) {
+    n_read = max_bytes;
+  }
+  memcpy(dest, base_addr, n_read);
+  index += n_read;
+  return n_read;
+}
+
+FileReader::FileReader(const char *filename) : file(filename, std::ios::binary) {
+  if (!file.is_open()) {
+    std::cerr << "Cannot open '" << filename << "'\n";
+    assert(0);
+  }
+
+  // Get the size of the file
+  file.seekg(0, std::ios::end);
+  file_size = file.tellg();
+  file.seekg(0, std::ios::beg);
+}
+
+uint64_t FileReader::next() {
+  if (!file.eof()) {
+    uint64_t value;
+    file.read(reinterpret_cast<char*>(&value), sizeof(uint64_t));
+    if (!file.fail()) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+uint64_t FileReader::read_all(void *dest, uint64_t max_bytes) {
+  uint64_t read_size = (file_size > max_bytes) ? max_bytes : file_size;
+  file.read(static_cast<char*>(dest), read_size);
+  return read_size;
+}
+
+InputReader *SimMemory::createInputReader(const char *image) {
+  if (is_stdin(image)) {
+    return new StdinReader();
+  }
+  uint64_t n_bytes;
+  if (uint64_t *ptr = is_wim(image, n_bytes)) {
+    return new WimReader(ptr, n_bytes);
+  }
+  return new FileReader(image);
+}
+
+void SimMemory::display_stats() {
+#ifdef FUZZING
+  uint64_t req_in_range = 0;
+  auto const img_indices = get_img_size() / sizeof(uint64_t);
+  for (auto index : accessed_indices) {
+    if (index < img_indices) {
+      req_in_range++;
+    }
+  }
+  auto req_all = accessed_indices.size();
+  printf("SimMemory: img_size %lu, req_all %lu, req_in_range %lu\n", img_indices, req_all, req_in_range);
+#endif // FUZZING
+}
+
+MmapMemory::MmapMemory(const char *image, uint64_t n_bytes) : SimMemory(n_bytes) {
   // initialize memory using Linux mmap
-  ram = (uint64_t *)mmap(NULL, EMU_RAM_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+  ram = (uint64_t *)mmap(NULL, memory_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
   if (ram == (uint64_t *)MAP_FAILED) {
     printf("Warning: Insufficient phisical memory\n");
-    EMU_RAM_SIZE = 128 * 1024 * 1024UL;
-    ram = (uint64_t *)mmap(NULL, EMU_RAM_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    memory_size = 128 * 1024 * 1024UL;
+    ram = (uint64_t *)mmap(NULL, memory_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     if (ram == (uint64_t *)MAP_FAILED) {
-      printf("Error: Cound not mmap 0x%lx bytes\n", EMU_RAM_SIZE);
+      printf("Error: Cound not mmap 0x%lx bytes\n", memory_size);
       assert(0);
     }
   }
-  printf("Using simulated %luMB RAM\n", EMU_RAM_SIZE / (1024 * 1024));
+  Info("Using simulated %luMB RAM\n", memory_size / (1024 * 1024));
 
 #ifdef TLB_UNITTEST
   //new add
@@ -148,30 +259,21 @@ void init_ram(const char *img) {
   //new end
 #endif
 
-  int ret;
-  if (isGzFile(img)) {
-    printf("Gzip file detected and loading image from extracted gz file\n");
-    img_size = readFromGz(ram, img, EMU_RAM_SIZE, LOAD_RAM);
+  if (image == NULL) {
+    img_size = 0;
+    return;
+  }
+
+  printf("The image is %s\n", image);
+  if (isGzFile(image)) {
+    Info("Gzip file detected and loading image from extracted gz file\n");
+    img_size = readFromGz(ram, image, memory_size, LOAD_RAM);
     assert(img_size >= 0);
   }
   else {
-    FILE *fp = fopen(img, "rb");
-    if (fp == NULL) {
-      printf("Can not open '%s'\n", img);
-      assert(0);
-    }
-
-    fseek(fp, 0, SEEK_END);
-    img_size = ftell(fp);
-    if (img_size > EMU_RAM_SIZE) {
-      img_size = EMU_RAM_SIZE;
-    }
-
-    fseek(fp, 0, SEEK_SET);
-    ret = fread(ram, img_size, 1, fp);
-
-    assert(ret == 1);
-    fclose(fp);
+    InputReader *reader = createInputReader(image);
+    img_size = reader->read_all(ram, memory_size);
+    delete reader;
   }
 
 #ifdef WITH_DRAMSIM3
@@ -179,29 +281,40 @@ void init_ram(const char *img) {
 #endif
 }
 
-void ram_finish() {
-  munmap(ram, EMU_RAM_SIZE);
+MmapMemory::~MmapMemory() {
+  munmap(ram, memory_size);
 #ifdef WITH_DRAMSIM3
   dramsim3_finish();
 #endif
 }
 
-
-extern "C" uint64_t ram_read_helper(uint8_t en, uint64_t rIdx) {
-  if (!ram)
+extern "C" uint64_t difftest_ram_read(uint64_t rIdx) {
+  if (!simMemory)
     return 0;
-  rIdx %= EMU_RAM_SIZE / sizeof(uint64_t);
-  uint64_t rdata = (en) ? ram[rIdx] : 0;
+  rIdx %= simMemory->get_size() / sizeof(uint64_t);
+  uint64_t rdata = simMemory->at(rIdx);
   return rdata;
 }
 
-extern "C" void ram_write_helper(uint64_t wIdx, uint64_t wdata, uint64_t wmask, uint8_t wen) {
-  if (wen && ram) {
-    if (wIdx >= EMU_RAM_SIZE / sizeof(uint64_t)) {
+extern "C" uint64_t ram_read_helper(uint8_t en, uint64_t rIdx) {
+  if (!en)
+    return 0;
+  return difftest_ram_read(rIdx);
+}
+
+extern "C" void difftest_ram_write(uint64_t wIdx, uint64_t wdata, uint64_t wmask) {
+  if (simMemory) {
+    if (!simMemory->in_range_u64(wIdx)) {
       printf("ERROR: ram wIdx = 0x%lx out of bound!\n", wIdx);
       return;
     }
-    ram[wIdx] = (ram[wIdx] & ~wmask) | (wdata & wmask);
+    simMemory->at(wIdx) = (simMemory->at(wIdx) & ~wmask) | (wdata & wmask);
+  }
+}
+
+extern "C" void ram_write_helper(uint64_t wIdx, uint64_t wdata, uint64_t wmask, uint8_t wen) {
+  if (wen) {
+    difftest_ram_write(wIdx, wdata, wmask);
   }
 }
 
@@ -219,6 +332,97 @@ void pmem_write(uint64_t waddr, uint64_t wdata) {
   }
   waddr -= PMEM_BASE;
   return ram_write_helper(waddr / sizeof(uint64_t), wdata, -1UL, 1);
+}
+
+MmapMemoryWithFootprints::MmapMemoryWithFootprints(const char *image, uint64_t n_bytes, const char *footprints_name)
+  : MmapMemory(image, n_bytes) {
+  uint64_t n_touched = memory_size / sizeof(uint64_t);
+  touched = (uint8_t *)mmap(NULL, n_touched, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+  footprints_file.open(footprints_name, std::ios::binary);
+  if (!footprints_file.is_open()) {
+    printf("Cannot open %s as the footprints file\n", footprints_name);
+    assert(0);
+  }
+}
+
+MmapMemoryWithFootprints::~MmapMemoryWithFootprints() {
+  munmap(touched, memory_size / sizeof(uint64_t));
+  footprints_file.close();
+}
+
+uint64_t& MmapMemoryWithFootprints::at(uint64_t index) {
+  uint64_t &data = MmapMemory::at(index);
+  if (!touched[index]) {
+    footprints_file.write(reinterpret_cast<const char*>(&data), sizeof(data));
+    touched[index] = 1;
+  }
+  return data;
+}
+
+FootprintsMemory::FootprintsMemory(const char *footprints_name, uint64_t n_bytes)
+  : SimMemory(n_bytes), reader(createInputReader(footprints_name)), n_accessed(0) {
+  printf("The image is %s\n", footprints_name);
+  add_callback([this](uint64_t, uint64_t) { this->on_access(this->n_accessed / sizeof(uint64_t)); });
+}
+
+FootprintsMemory::~FootprintsMemory() {
+  delete reader;
+}
+
+uint64_t& FootprintsMemory::at(uint64_t index) {
+  if (ram.find(index) == ram.end()) {
+    uint64_t value = reader->next();
+    ram[index] = value;
+    for (auto& cb : callbacks) {
+      cb(index, value);
+    }
+    n_accessed += sizeof(uint64_t);
+  }
+  return ram[index];
+}
+
+LinearizedFootprintsMemory::LinearizedFootprintsMemory(
+    const char *footprints_name,
+    uint64_t n_bytes,
+    const char *linear_name)
+  : FootprintsMemory(footprints_name, n_bytes), linear_name(linear_name), n_touched(0) {
+  linear_memory = (uint64_t*)mmap(nullptr, n_bytes,
+    PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+  if (linear_memory == MAP_FAILED) {
+    perror("mmap");
+    exit(EXIT_FAILURE);
+  }
+  add_callback([this](uint64_t index, uint64_t value) {
+    if (value) {
+      linear_memory[index] = value;
+      n_touched++;
+    }
+  });
+}
+
+LinearizedFootprintsMemory::~LinearizedFootprintsMemory() {
+  save_linear_memory(linear_name);
+  munmap(linear_memory, get_size());
+}
+
+void LinearizedFootprintsMemory::save_linear_memory(const char* filename) {
+  std::ofstream out_file(filename, std::ios::out | std::ios::binary);
+  if (!out_file) {
+    std::cerr << "Cannot open output file: " << filename << std::endl;
+    return;
+  }
+  // Find the position of the last non-zero element
+  uint64_t last_nonzero_index = 0, nonzero_count = 0;
+  for (uint64_t i = 0; i < get_size() / sizeof(uint64_t) && nonzero_count < n_touched; ++i) {
+    if (linear_memory[i] != 0) {
+      last_nonzero_index = i;
+      nonzero_count++;
+    }
+  }
+  // Even if all all zeros, we still write one uint64_t.
+  size_t n_bytes = (last_nonzero_index + 1) * sizeof(uint64_t);
+  out_file.write(reinterpret_cast<char*>(linear_memory), n_bytes);
+  out_file.close();
 }
 
 #ifdef WITH_DRAMSIM3
