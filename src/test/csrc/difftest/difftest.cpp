@@ -16,6 +16,7 @@
 
 #include "difftest.h"
 #include "difftrace.h"
+#include "dut.h"
 #include "goldenmem.h"
 #include "ram.h"
 #include "flash.h"
@@ -75,6 +76,8 @@ Difftest::Difftest(int coreid) : id(coreid) {
   state = new DiffState();
   dut.trap.cycleCnt = 0;
   dut.trap.instrCnt = 0;
+
+  memset(&dut, 0, sizeof(dut));
 
 #ifdef CONFIG_DIFFTEST_INSTRCOVER
   memset(dut.icover, 0, sizeof(dut.icover));
@@ -149,9 +152,9 @@ int Difftest::step() {
 #ifdef CONFIG_DIFFTEST_LRSCEVENT
   // sync lr/sc reg microarchitectural status to the REF
   if (dut.lrsc.valid) {
+    dut.lrsc.valid = 0;
     struct SyncState sync;
     sync.sc_fail = !dut.lrsc.success;
-    printf("sync: sc_fail %lu\n", sync.sc_fail);
     proxy->uarchstatus_sync((uint64_t*)&sync);
   }
 #endif
@@ -160,6 +163,8 @@ int Difftest::step() {
   if (dut.event.valid) {
   // interrupt has a higher priority than exception
     dut.event.interrupt ? do_interrupt() : do_exception();
+    dut.event.valid = 0;
+    dut.commit[0].valid = 0;
   } else {
     for (int i = 0; i < CONFIG_DIFF_COMMIT_WIDTH && dut.commit[i].valid; i++) {
       if (do_instr_commit(i)) {
@@ -488,15 +493,19 @@ int Difftest::do_store_check() {
 //          8 -> icache mainPipe port1 read PIQ
 int Difftest::do_refill_check(int cacheid) {
 #ifdef CONFIG_DIFFTEST_REFILLEVENT
+  auto dut_refill = &(dut.refill[cacheid]);
+  if (!dut_refill->valid) {
+    return 0;
+  }
+  dut_refill->valid = 0;
   static int delay = 0;
   delay = delay * 2;
   if (delay > 16) { return 1; }
   static uint64_t last_valid_addr = 0;
   char buf[512];
-  auto dut_refill = &(dut.refill[cacheid]);
   uint64_t realpaddr = dut_refill->addr;
   dut_refill->addr = dut_refill->addr - dut_refill->addr % 64;
-  if (dut_refill->valid == 1 && dut_refill->addr != last_valid_addr) {
+  if (dut_refill->addr != last_valid_addr) {
     last_valid_addr = dut_refill->addr;
     if(!in_pmem(dut_refill->addr)){
       // speculated illegal mem access should be ignored
@@ -552,6 +561,7 @@ int Difftest::do_l1tlb_check() {
     if (!dut.l1tlb[i].valid) {
       continue;
     }
+    dut.l1tlb[i].valid = 0;
     PTE pte;
     uint64_t paddr;
     uint8_t difftest_level;
@@ -584,7 +594,7 @@ int Difftest::do_l2tlb_check() {
     if (!dut.l2tlb[i].valid) {
       continue;
     }
-
+    dut.l2tlb[i].valid = 0;
     for (int j = 0; j < 8; j++) {
       if (dut.l2tlb[i].valididx[j]) {
         PTE pte;

@@ -74,6 +74,7 @@ static inline void print_help(const char *file) {
   printf("  -W, --warmup-instr=NUM     the number of warmup instructions\n");
   printf("  -D, --stat-cycles=NUM      the interval cycles of dumping statistics\n");
   printf("  -i, --image=FILE           run with this image file\n");
+  printf("  -r, --gcpt-restore=FILE    overwrite gcptrestore img with this image file\n");
   printf("  -b, --log-begin=NUM        display log from NUM th cycle\n");
   printf("  -e, --log-end=NUM          stop display log at NUM th cycle\n");
 #ifdef DEBUG_REFILL
@@ -83,6 +84,7 @@ static inline void print_help(const char *file) {
   printf("  -R, --ipc-interval=NUM     the interval insts of drawing IPC curve\n");
 #endif
   printf("  -X, --fork-interval=NUM    LightSSS snapshot interval (in seconds)\n");
+  printf("      --overwrite-nbytes=N   set valid bytes, but less than 0xf00, default: 0xe00\n");
   printf("      --force-dump-result    force dump performance counter result in the end\n");
   printf("      --load-snapshot=PATH   load snapshot from PATH\n");
   printf("      --no-snapshot          disable saving snapshots\n");
@@ -96,7 +98,6 @@ static inline void print_help(const char *file) {
 #endif
   printf("      --flash                the flash bin file for simulation\n");
   printf("      --sim-run-ahead        let a fork of simulator run ahead of commit for perf analysis\n");
-  printf("      --ref-trace            print reference trace\n");
   printf("      --wave-path=FILE       dump waveform to a specified PATH\n");
   printf("      --ram-size=SIZE        simulation memory size, for example 8GB / 128MB\n");
   printf("      --enable-fork          enable folking child processes to debug\n");
@@ -133,7 +134,6 @@ inline EmuArgs parse_args(int argc, const char *argv[]) {
     { "wave-path",         1, NULL,  0  },
     { "ram-size",          1, NULL,  0  },
     { "sim-run-ahead",     0, NULL,  0  },
-    { "ref-trace",         0, NULL,  0  },
     { "dump-db",           0, NULL,  0  },
     { "dump-select-db",    1, NULL,  0  },
     { "dump-coverage",     0, NULL,  0  },
@@ -145,6 +145,7 @@ inline EmuArgs parse_args(int argc, const char *argv[]) {
     { "as-footprints",     0, NULL,  0  },
     { "dump-linearized",   1, NULL,  0  },
     { "dump-wave-full",    0, NULL,  0  },
+    { "overwrite-nbytes",  1, NULL,  0  },
     { "seed",              1, NULL, 's' },
     { "max-cycles",        1, NULL, 'C' },
     { "fork-interval",     1, NULL, 'X' },
@@ -156,6 +157,7 @@ inline EmuArgs parse_args(int argc, const char *argv[]) {
     { "warmup-instr",      1, NULL, 'W' },
     { "stat-cycles",       1, NULL, 'D' },
     { "image",             1, NULL, 'i' },
+    { "gcpt-restore",      1, NULL, 'r' },
     { "log-begin",         1, NULL, 'b' },
     { "log-end",           1, NULL, 'e' },
     { "flash",             1, NULL, 'F' },
@@ -165,7 +167,7 @@ inline EmuArgs parse_args(int argc, const char *argv[]) {
 
   int o;
   while ( (o = getopt_long(argc, const_cast<char *const*>(argv),
-          "-s:C:X:I:T:R:W:hi:m:b:e:F:", long_options, &long_index)) != -1) {
+          "-s:C:X:I:T:R:W:hi:r:m:b:e:F:", long_options, &long_index)) != -1) {
     switch (o) {
       case 0:
         switch (long_index) {
@@ -188,34 +190,34 @@ inline EmuArgs parse_args(int argc, const char *argv[]) {
             printf("[WARN] runahead is not enabled at compile time, ignore --sim-run-ahead\n");
 #endif
             continue;
-          case 11: args.enable_ref_trace = true; continue;
 #ifdef ENABLE_CHISEL_DB
-          case 12: args.dump_db = true; continue;
-          case 13:
+          case 11: args.dump_db = true; continue;
+          case 12:
             args.dump_db = true;
             args.select_db = optarg;
             continue;
 #else
+          case 11:
           case 12:
-          case 13:
             printf("[WARN] chisel db is not enabled at compile time, ignore --dump-db\n");
             continue;
 #endif
-          case 14:
+          case 13:
 #if VM_COVERAGE == 1
             args.dump_coverage = true;
 #else
             printf("[WARN] coverage is not enabled at compile time, ignore --dump-coverage\n");
 #endif // VM_COVERAGE
             continue;
-          case 15: args.enable_ref_trace = true; continue;
-          case 16: args.enable_commit_trace = true; continue;
-          case 17: args.trace_name = optarg; args.trace_is_read = true; continue;
-          case 18: args.trace_name = optarg; args.trace_is_read = false; continue;
-          case 19: args.footprints_name = optarg; continue;
-          case 20: args.image_as_footprints = true; continue;
-          case 21: args.linearized_name = optarg; continue;
-          case 22: args.enable_waveform = true; args.enable_waveform_full = true; continue;
+          case 14: args.enable_ref_trace = true; continue;
+          case 15: args.enable_commit_trace = true; continue;
+          case 16: args.trace_name = optarg; args.trace_is_read = true; continue;
+          case 17: args.trace_name = optarg; args.trace_is_read = false; continue;
+          case 18: args.footprints_name = optarg; continue;
+          case 19: args.image_as_footprints = true; continue;
+          case 20: args.linearized_name = optarg; continue;
+          case 21: args.enable_waveform = true; args.enable_waveform_full = true; continue;
+          case 22: args.overwrite_nbytes = atoll_strict(optarg, "overwrite_nbytes"); continue;
         }
         // fall through
       default:
@@ -255,6 +257,7 @@ inline EmuArgs parse_args(int argc, const char *argv[]) {
       case 'W': args.warmup_instr = atoll_strict(optarg, "warmup-instr");  break;
       case 'D': args.stat_cycles = atoll_strict(optarg, "stat-cycles");  break;
       case 'i': args.image = optarg; break;
+      case 'r': args.gcpt_restore = optarg; break;
       case 'b': args.log_begin = atoll_strict(optarg, "log-begin");  break;
       case 'e': args.log_end = atoll_strict(optarg, "log-end"); break;
       case 'F': args.flash_bin = optarg; break;
@@ -364,8 +367,15 @@ Emulator::Emulator(int argc, const char *argv[]):
       simMemory = new MmapMemoryWithFootprints(args.image, ram_size, args.footprints_name);
     }
     else {
-      simMemory = new MmapMemory(args.image, ram_size);
+      init_ram(args.image, ram_size);
     }
+  }
+
+  if (args.gcpt_restore) {
+    InputReader *reader = new FileReader(args.gcpt_restore);
+    int overwrite_size = reader->read_all(simMemory->as_ptr(), args.overwrite_nbytes);
+    Info("Overwrite %d bytes from file %s.\n", overwrite_size, args.gcpt_restore);
+    delete reader;
   }
 
 #ifdef ENABLE_CHISEL_DB
@@ -471,6 +481,7 @@ Emulator::~Emulator() {
     else {
       lightsss->do_clear();
     }
+    delete lightsss;
   }
 
   display_trapinfo();
@@ -646,18 +657,6 @@ int Emulator::tick() {
     lasttime_poll = t;
   }
 #endif
-
-#ifndef CONFIG_NO_DIFFTEST
-  // if ref trace is enabled in co-sim args
-  // let simulator print debug info
-  if (args.enable_ref_trace) {
-    RefProxyConfig ref_config;
-    ref_config.debug_difftest = true;
-    for (int i = 0; i < NUM_CORES; i++) {
-      difftest[i]->proxy->update_config(&ref_config);
-    }
-  }
-#endif // CONFIG_NO_DIFFTEST
 
   if (args.enable_fork && is_fork_child() && cycles != 0) {
     if (cycles == lightsss->get_end_cycles()) {

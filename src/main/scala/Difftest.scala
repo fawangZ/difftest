@@ -18,15 +18,12 @@ package difftest
 
 import chisel3._
 import chisel3.util._
+import difftest.batch.Batch
 import difftest.dpic.DPIC
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 import scala.collection.mutable.ListBuffer
-
-trait DifftestWithClock {
-  val clock  = Clock()
-}
 
 trait DifftestWithCoreid {
   val coreid = UInt(8.W)
@@ -48,7 +45,6 @@ trait DifftestWithAddress { this: DifftestWithValid =>
 }
 
 abstract class DifftestBundle extends Bundle
-  with DifftestWithClock
   with DifftestWithCoreid {
   // Used to detect the number of cores. Must be used only by one Bundle.
   def isUniqueIdentifier: Boolean = false
@@ -78,6 +74,7 @@ abstract class DifftestBundle extends Bundle
       case _ => true.B
     }
   }
+  def needUpdate: Option[Bool] = if (withValid) Some(getValid) else None
   def isFlatten: Boolean = this.isInstanceOf[DifftestWithAddress] &&
     this.asInstanceOf[DifftestWithAddress].needFlatten
   def numFlattenElements: Int = this.asInstanceOf[DifftestWithAddress].numElements
@@ -88,7 +85,7 @@ abstract class DifftestBundle extends Bundle
     val raw = elements.toSeq.reverse.filterNot(e => filteredElements.contains(e._1))
     raw.map{ case (s, data) =>
       data match {
-        case v: Vec[UInt] => (s, Some(v))
+        case v: Vec[_] => (s, Some(v.asInstanceOf[Vec[UInt]]))
         case u: UInt => (s, Some(Seq(u)))
         case _ => println(s"Unknown type: ($s, $data)")
           (s, None)
@@ -191,6 +188,7 @@ class DiffTrapEvent extends DifftestBundle {
   val pc       = UInt(64.W)
 
   override val desiredCppName: String = "trap"
+  override def needUpdate: Option[Bool] = Some(hasTrap || hasWFI)
 }
 
 class DiffCSRState extends DifftestBundle {
@@ -420,14 +418,18 @@ object DifftestModule {
     delay:    Int     = 0,
   ): T = {
     val id = register(gen, style)
-    val mod = style match {
+    val difftest: T = Wire(gen)
+    val sink = style match {
+      case "batch" => Batch(gen)
       // By default, use the DPI-C style.
-      case _ => DPIC(gen, delay)
+      case _ => DPIC(gen)
     }
+    sink := Delayer(difftest, delay)
+    sink.coreid := difftest.coreid
     if (dontCare) {
-      mod := DontCare
+      difftest := DontCare
     }
-    mod
+    difftest
   }
 
   def register[T <: DifftestBundle](gen: T, style: String): Int = {
@@ -438,14 +440,20 @@ object DifftestModule {
   }
 
   def hasDPIC: Boolean = instances.exists(_._2 == "dpic")
-  def finish(cpu: String, cppHeader: Boolean = true): Unit = {
-    DPIC.collect()
-    if (cppHeader) {
-      generateCppHeader(cpu)
+  def hasBatch: Boolean = instances.exists(_._2 == "batch")
+  def finish(cpu: String, cppHeader: Option[String] = Some("dpic")): Unit = {
+    if (hasDPIC) {
+      DPIC.collect()
+    }
+    if (hasBatch) {
+      Batch.collect()
+    }
+    if (cppHeader.isDefined) {
+      generateCppHeader(cpu, cppHeader.get)
     }
   }
 
-  def generateCppHeader(cpu: String): Unit = {
+  def generateCppHeader(cpu: String, style: String): Unit = {
     val difftestCpp = ListBuffer.empty[String]
     difftestCpp += "#ifndef __DIFFSTATE_H__"
     difftestCpp += "#define __DIFFSTATE_H__"
@@ -457,8 +465,13 @@ object DifftestModule {
     difftestCpp += s"#define CPU_$cpu_s"
     difftestCpp += ""
 
-    val numCores = instances.filter(_._1.isUniqueIdentifier).length
-    val uniqBundles = instances.groupBy(_._1.desiredModuleName)
+    val headerInstances = instances.filter(_._2 == style)
+
+    val numCores = headerInstances.count(_._1.isUniqueIdentifier)
+    difftestCpp += s"#define NUM_CORES $numCores"
+    difftestCpp += ""
+
+    val uniqBundles = headerInstances.groupBy(_._1.desiredModuleName)
     // Create cpp declaration for each bundle type
     uniqBundles.values.map(_.map(_._1)).foreach(bundles => {
       val bundleType = bundles.head
@@ -500,6 +513,30 @@ object DifftestModule {
     Files.createDirectories(Paths.get(outputDir))
     val outputFile = outputDir + "/diffstate.h"
     Files.write(Paths.get(outputFile), difftestCpp.mkString("\n").getBytes(StandardCharsets.UTF_8))
+  }
+}
+
+private class Delayer[T <: Data](gen: T, n_cycles: Int) extends Module {
+  val i = IO(Input(gen.cloneType))
+  val o = IO(Output(gen.cloneType))
+
+  var r = WireInit(i)
+  for (_ <- 0 until n_cycles) {
+    r = RegNext(r)
+  }
+  o := r
+}
+
+object Delayer {
+  def apply[T <: Data](gen: T, n_cycles: Int): T = {
+    if (n_cycles > 0) {
+      val delayer = Module(new Delayer(gen, n_cycles))
+      delayer.i := gen
+      delayer.o
+    }
+    else {
+      gen
+    }
   }
 }
 

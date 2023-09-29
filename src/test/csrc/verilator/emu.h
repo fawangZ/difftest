@@ -44,6 +44,7 @@ struct EmuArgs {
   uint64_t warmup_instr = -1;
   uint64_t stat_cycles = -1;
   uint64_t log_begin = 0, log_end = -1;
+  uint64_t overwrite_nbytes = 0xe00;
 #ifdef DEBUG_REFILL
   uint64_t track_instr = 0;
 #endif
@@ -55,6 +56,7 @@ struct EmuArgs {
   uint64_t ipc_times;
 #endif
   const char *image = nullptr;
+  const char *gcpt_restore = nullptr;
   const char *snapshot_path = nullptr;
   const char *wave_path = nullptr;
   const char *ram_size = nullptr;
@@ -77,18 +79,6 @@ struct EmuArgs {
   bool trace_is_read = true;
   bool dump_coverage = false;
   bool image_as_footprints = false;
-};
-
-enum {
-  STATE_GOODTRAP = 0,
-  STATE_BADTRAP = 1,
-  STATE_ABORT = 2,
-  STATE_LIMIT_EXCEEDED = 3,
-  STATE_SIG = 4,
-  STATE_AMBIGUOUS = 5,
-  STATE_SIM_EXIT = 6,
-  STATE_FUZZ_COND = 7,
-  STATE_RUNNING = -1
 };
 
 class Emulator final : public DUT {
