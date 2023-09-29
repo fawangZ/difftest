@@ -27,7 +27,8 @@ trait HasChisel extends ScalaModule {
 }
 
 object difftest extends SbtModule with ScalafmtModule with CommonModule with HasChisel {
-  override def millSourcePath = os.pwd / "difftest"
+  
+  override def millSourcePath = millOuterCtx.millSourcePath
 }
 
 object chiselModule extends SbtModule with ScalafmtModule with CommonModule with HasChisel {
